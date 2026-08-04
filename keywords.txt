@@ -1,0 +1,31 @@
+#######################################
+# Syntax Coloring Map For TelegramSender
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+TelegramSender	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+setEnabled	KEYWORD2
+setTestMode	KEYWORD2
+setCertValidation	KEYWORD2
+sendMessage	KEYWORD2
+errorText	KEYWORD2
+
+#######################################
+# Enumerations (KEYWORD1)
+#######################################
+
+TelegramError	KEYWORD1
+TELEGRAM_OK	KEYWORD1
+TELEGRAM_DISABLED	KEYWORD1
+TELEGRAM_NO_WIFI	KEYWORD1
+TELEGRAM_NO_CLOCK	KEYWORD1
+TELEGRAM_LOW_HEAP	KEYWORD1
+TELEGRAM_HTTP_ERROR	KEYWORD1
