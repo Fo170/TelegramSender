@@ -11,8 +11,13 @@
  */
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
 #include <time.h>
+
+#if defined(ESP8266)
+  #include <ESP8266WiFi.h>
+#elif defined(ESP32)
+  #include <WiFi.h>
+#endif
 
 #define TELEGRAM_BOT_TOKEN  "123456789:AA...remplacez"
 #define TELEGRAM_CHAT_ID    "123456789"

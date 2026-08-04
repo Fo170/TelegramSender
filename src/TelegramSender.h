@@ -1,16 +1,34 @@
 // ============================================================
-// TelegramSender.h - Envoi bas niveau de messages Telegram (ESP8266)
-// Version 1.0.0 - https://github.com/Fo170/TelegramSender
-// Une seule fonction : sendMessage(). Gestion évoluée (queue, retry,
-// throttling) à faire dans une librairie de plus haut niveau.
+// TelegramSender.h - Envoi bas niveau de messages Telegram
+// Version 1.1.0 - https://github.com/Fo170/TelegramSender
+// ESP8266 et ESP32. Une seule fonction : sendMessage(). Gestion
+// évoluée (queue, retry, throttling) à faire dans une librairie
+// de plus haut niveau.
 // ============================================================
 
 #ifndef TELEGRAM_SENDER_H
 #define TELEGRAM_SENDER_H
 
 #include <Arduino.h>
-#include <ESP8266HTTPClient.h>
 #include <time.h>
+
+// WiFi / HTTPClient selon la plateforme :
+//  - ESP8266 : ESP8266WiFi + ESP8266HTTPClient (BearSSL)
+//  - ESP32   : WiFi + HTTPClient
+//  - autres  : tentative générique (WiFi.h + HTTPClient.h), non testée
+#if defined(ESP8266)
+  #include <ESP8266WiFi.h>
+  #include <ESP8266HTTPClient.h>
+#elif defined(ESP32)
+  #include <WiFi.h>
+  #include <WiFiClientSecure.h>
+  #include <HTTPClient.h>
+#else
+  #warning "TelegramSender : plateforme non officiellement supportee (ESP8266/ESP32) - compilation en mode generique"
+  #include <WiFi.h>
+  #include <WiFiClientSecure.h>
+  #include <HTTPClient.h>
+#endif
 
 // Configuration Telegram (à définir à la compilation, jamais en clair ici)
 //#define TELEGRAM_BOT_TOKEN      "xxxxx"
@@ -119,8 +137,11 @@ public:
         } else {
             wifiClient.setInsecure();
         }
-        // Buffers TLS réduits pour économiser le heap (BearSSL ~2 Ko au lieu de ~4)
+        // Buffers TLS réduits pour économiser le heap (BearSSL ~2 Ko au lieu
+        // de ~4) - API spécifique ESP8266
+#ifdef ESP8266
         wifiClient.setBufferSizes(1024, 1024);
+#endif
         // HTTPClient également LOCAL : ses buffers sont libérés à chaque envoi
         HTTPClient http;
 

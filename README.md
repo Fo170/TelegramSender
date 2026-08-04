@@ -1,16 +1,21 @@
 # TelegramSender
 
-Envoi bas niveau de messages Telegram pour **ESP8266** (header-only, une seule fonction synchrone `sendMessage()`).
+Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, une seule fonction synchrone `sendMessage()`).
 
 https://github.com/Fo170/TelegramSender
 
 ## Caractéristiques
 
 - `int sendMessage(const String&)` → `int` (`TelegramError`, 0 = succès), **aucune allocation heap en retour**.
-- TLS par certificat : `TELEGRAM_ROOT_CA` (Go Daddy Root CA - G2) en PROGMEM, validation BearSSL. `setCertValidation(false)` → `setInsecure()` (uniquement si l'horloge n'est jamais synchronisée).
+- TLS par certificat : `TELEGRAM_ROOT_CA` (Go Daddy Root CA - G2) en PROGMEM, validation BearSSL (ESP8266) / mbedTLS (ESP32). `setCertValidation(false)` → `setInsecure()` (uniquement si l'horloge n'est jamais synchronisée).
 - Configuration : `setEnabled(bool)` (défaut `true`), `setTestMode(bool)` (défaut `false`, affiche sur Serial au lieu d'envoyer), `setCertValidation(bool)` (défaut `true`).
 - `static const char* errorText(int code)` : texte des codes retour, sans dépendance externe.
 - Gestion évoluée (queue, retry, throttling) : **hors de cette lib**, à faire dans une librairie de plus haut niveau.
+
+## Plateformes
+
+- **Officiellement supportées** : ESP8266 (BearSSL, `setBufferSizes(1024,1024)`) et ESP32.
+- Autres plateformes : tentative générique (`WiFi.h` + `HTTPClient.h`), compilable mais **non testée**.
 
 ## Token et chat ID
 

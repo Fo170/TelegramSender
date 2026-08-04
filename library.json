@@ -1,8 +1,8 @@
 {
   "name": "TelegramSender",
-  "version": "1.0.0",
-  "description": "Envoi bas niveau de messages Telegram pour ESP8266 : une seule fonction synchrone sendMessage(), TLS par certificat (Go Daddy Root CA en PROGMEM), codes retour précis (TelegramError) sans allocation heap. Gestion avancée (queue/retry/throttling) à faire dans une librairie de plus haut niveau.",
-  "keywords": ["telegram", "bot", "send", "message", "notify", "esp8266", "tls", "bearssl"],
+  "version": "1.1.0",
+  "description": "Envoi bas niveau de messages Telegram pour ESP8266 et ESP32 : une seule fonction synchrone sendMessage(), TLS par certificat (Go Daddy Root CA en PROGMEM), codes retour précis (TelegramError) sans allocation heap. Gestion avancée (queue/retry/throttling) à faire dans une librairie de plus haut niveau.",
+  "keywords": ["telegram", "bot", "send", "message", "notify", "esp8266", "esp32", "tls", "bearssl"],
   "repository": {
     "type": "git",
     "url": "https://github.com/Fo170/TelegramSender.git"
@@ -19,7 +19,8 @@
   "homepage": "https://github.com/Fo170/TelegramSender",
   "frameworks": "arduino",
   "platforms": [
-    "espressif8266"
+    "espressif8266",
+    "espressif32"
   ],
   "headers": "TelegramSender.h"
 }
