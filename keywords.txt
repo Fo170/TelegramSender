@@ -15,6 +15,7 @@ TelegramSender	KEYWORD1
 setEnabled	KEYWORD2
 setTestMode	KEYWORD2
 setCertValidation	KEYWORD2
+setParseMode	KEYWORD2
 sendMessage	KEYWORD2
 errorText	KEYWORD2
 

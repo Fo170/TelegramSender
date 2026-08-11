@@ -8,6 +8,8 @@
  *   - configTime() : obligatoire pour la validation BearSSL (sinon TELEGRAM_NO_CLOCK)
  *   - TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID définis à la compilation
  *     (remplacez ci-dessous ou passez-les en build_flags)
+ * Note : device à RAM serrée ? Ajustez le seuil heap à la compilation
+ *   (-DTELEGRAM_MIN_HEAP=8000 dans build_flags, défaut 12000).
  */
 
 #include <Arduino.h>
@@ -52,6 +54,11 @@ void setup() {
     Serial.println(" OK");
 
     syncTime();
+
+    // Le message ci-dessous est du texte brut (aucune mise en forme) : on coupe
+    // le parse_mode Markdown par défaut, sinon "_" ou "*" dans un futur message
+    // feraient répondre Telegram en HTTP 400.
+    tg.setParseMode("");
 
     // Test mode : le message est affiché sur Serial, rien n'est envoyé
     tg.setTestMode(true);
