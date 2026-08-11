@@ -1,8 +1,8 @@
 # TelegramSender
 
-Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, une seule fonction synchrone `sendMessage()`).
+**Version 1.2.0** — https://github.com/Fo170/TelegramSender
 
-https://github.com/Fo170/TelegramSender
+Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, une seule fonction synchrone `sendMessage()`).
 
 ## Caractéristiques
 
