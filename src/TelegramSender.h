@@ -1,9 +1,21 @@
 // ============================================================
 // TelegramSender.h - Envoi bas niveau de messages Telegram
-// Version 1.2.0 - https://github.com/Fo170/TelegramSender
-// ESP8266 et ESP32. Une seule fonction : sendMessage(). Gestion
-// évoluée (queue, retry, throttling) à faire dans une librairie
-// de plus haut niveau.
+// Version 1.3.0 - https://github.com/Fo170/TelegramSender
+// ESP8266 et ESP32. Envoi : sendMessage(), polling : getUpdatesBody().
+// Gestion évoluée (queue, retry, throttling) à faire dans une
+// librairie de plus haut niveau.
+// ============================================================
+//
+// Depuis la v1.3.0 : session TLS PERSISTANTE. Le WiFiClientSecure est
+// un membre de la classe (un seul handshake TLS à la connexion), au
+// lieu d'un client local recréé à CHAQUE appel. Le handshake
+// mbedTLS/BearSSL (~10-30 Ko) alloué/libéré à chaque poll/send
+// fragmentait le heap (ESP32 : abort()/reboot après quelques heures)
+// et ralentissait les échanges. L'HTTP est fait en requêtes HTTP/1.1
+// keep-alive brutes sur la session (plus de HTTPClient), et la session
+// est fermée/refaite automatiquement si la connexion tombe.
+//   Ajout : getUpdatesBody(offset, httpCode) pour le polling sur la
+//   même session, et endSession() pour fermer la session explicitement.
 // ============================================================
 
 #ifndef TELEGRAM_SENDER_H
@@ -36,7 +48,9 @@
 
 // URLs Telegram API
 #define TELEGRAM_API_URL        "https://api.telegram.org/bot"
+#define TELEGRAM_API_HOST       "api.telegram.org"
 #define TELEGRAM_SEND_MESSAGE   "/sendMessage"
+#define TELEGRAM_GET_UPDATES    "/getUpdates"
 
 // Certificat racine signataire de api.telegram.org
 // (Go Daddy Root Certificate Authority - G2, valide jusqu'en 2037).
@@ -67,9 +81,9 @@ static const char TELEGRAM_ROOT_CA[] PROGMEM =
     "4uJEvlz36hz1\n"
     "-----END CERTIFICATE-----\n";
 
-// Garde heap minimale pour un envoi TLS : les buffers BearSSL (~11 Ko en défaut,
-// ~5 Ko avec setBufferSizes(1024,1024)) sont alloués au moment du handshake, pas
-// au boot. En-dessous, on diffère plutôt que crasher.
+// Garde heap minimale pour un envoi TLS : les buffers BearSSL/mbedTLS
+// (~10-30 Ko, selon la plateforme) sont alloués au handshake, pas au boot.
+// En-dessous, on diffère plutôt que crasher.
 // ⚠️ Fourchette locale : seuil surchargeable à la compilation via
 //    -DTELEGRAM_MIN_HEAP=xxxx (le heap de repos du coulomètre est ~10 Ko).
 #ifndef TELEGRAM_MIN_HEAP
@@ -115,8 +129,15 @@ public:
         parseMode = mode;
     }
 
+    // Ferme explicitement la session TLS persistante (le handshake sera
+    // refait à la prochaine requête). Utile en cas de perte WiFi prolongée.
+    void endSession() {
+        _closeSession();
+    }
+
     // Envoi bas niveau : une seule tentative synchrone.
-    // Retourne TELEGRAM_OK si le serveur a répondu 200, sinon le motif de l'échec.
+    // Retourne TELEGRAM_OK si le serveur a répondu 200 + "ok":true.
+    // Session TLS PERSISTANTE : le handshake n'a lieu qu'une fois.
     int sendMessage(const String& message) {
         if (!enabled) {
             return TELEGRAM_DISABLED;
@@ -132,57 +153,16 @@ public:
             return TELEGRAM_NO_WIFI;
         }
 
-        // Garde heap : les buffers BearSSL (~11 Ko en défaut, ~5 Ko avec
-        // setBufferSizes(1024,1024)) sont alloués au moment du handshake TLS,
-        // pas au boot. En-dessous, on diffère plutôt que crasher.
+        // Garde heap : les buffers TLS sont alloués au handshake. En-dessous,
+        // on diffère plutôt que crasher.
         if (ESP.getFreeHeap() < TELEGRAM_MIN_HEAP) {
             return TELEGRAM_LOW_HEAP;
         }
 
-        // WiFiClientSecure LOCAL (pas membre global) : les buffers BearSSL ne
-        // sont alloués qu'à la connexion. Validation TLS par certificat.
-        WiFiClientSecure wifiClient;
-        if (validateCert) {
-            // La validation BearSSL exige une horloge correcte (configTime) :
-            // sinon le certificat est jugé hors validité.
-            if (time(nullptr) < 100000) {
-                return TELEGRAM_NO_CLOCK;
-            }
-            #ifdef ESP8266
-            // Certificat racine STATIC : construit une seule fois (au 1er envoi),
-            // conserve ~1-2 Ko de heap en permanence — à connaître pour un device
-            // à RAM serrée.
-            static BearSSL::X509List cert(TELEGRAM_ROOT_CA);
-            wifiClient.setTrustAnchors(&cert);
-            #else
-            wifiClient.setCACert(TELEGRAM_ROOT_CA);
-            #endif
-        } else {
-            wifiClient.setInsecure();
+        // La validation TLS exige une horloge correcte (configTime).
+        if (validateCert && time(nullptr) < 100000) {
+            return TELEGRAM_NO_CLOCK;
         }
-        // Buffers TLS réduits pour économiser le heap (BearSSL ~2 Ko au lieu
-        // de ~4) - API spécifique ESP8266
-#ifdef ESP8266
-        wifiClient.setBufferSizes(1024, 1024);
-#endif
-        // Timeout court aussi sur le handshake TLS (sinon blocage possible
-        // plusieurs secondes avant même le début de la requête HTTP)
-        wifiClient.setTimeout(3000);
-
-        // HTTPClient également LOCAL : ses buffers sont libérés à chaque envoi
-        HTTPClient http;
-
-        // Envoi en POST : le token reste dans l'URL (chemin de l'API), le
-        // message et la config partent dans le corps. Pas de limite d'URL
-        // (~2 Ko en GET) et message absent de la ligne de requête.
-        String url = String(TELEGRAM_API_URL) + String(TELEGRAM_BOT_TOKEN) +
-                    String(TELEGRAM_SEND_MESSAGE);
-
-        http.begin(wifiClient, url);
-
-        // Timeout court: 3s max (handshake TLS peut bloquer longtemps sinon)
-        http.setTimeout(3000);
-        http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
         String body = "chat_id=" + String(TELEGRAM_CHAT_ID) +
                       "&text=" + urlEncode(message);
@@ -190,22 +170,28 @@ public:
             body += "&parse_mode=" + urlEncode(parseMode);
         }
 
-        int httpCode = http.POST(body);
+        String path = String(TELEGRAM_API_URL) + String(TELEGRAM_BOT_TOKEN) +
+                      String(TELEGRAM_SEND_MESSAGE);
 
+        int httpCode = -1;
+        String response = _httpRequest(path.c_str(), body, httpCode);
+
+        if (httpCode != 200) {
+            return TELEGRAM_HTTP_ERROR;
+        }
         // Un HTTP 200 ne suffit pas : vérifier le champ "ok" de la réponse
         // (un 200 trompeur avec "ok":false reste un échec).
-        bool apiOk = false;
-        if (httpCode == HTTP_CODE_OK) {
-            String response = http.getString();
-            apiOk = (response.indexOf("\"ok\":true") != -1);
-        }
+        bool apiOk = (response.indexOf("\"ok\":true") != -1);
+        return apiOk ? TELEGRAM_OK : TELEGRAM_HTTP_ERROR;
+    }
 
-        http.end();
-        // Libération explicite des buffers TLS BearSSL (sinon ~13 Ko de heap
-        // restent alloués/fragmentés après chaque envoi)
-        wifiClient.stop();
-
-        return (httpCode == HTTP_CODE_OK && apiOk) ? TELEGRAM_OK : TELEGRAM_HTTP_ERROR;
+    // Poll getUpdates sur la MÊME session TLS persistante (réutilisé par
+    // TelegramControl). Retourne le corps JSON brut ("" si échec réseau/HTTP)
+    // et remplit httpCode (200 = OK, -1 = échec de connexion).
+    String getUpdatesBody(unsigned long offset, int& httpCode) {
+        String path = String(TELEGRAM_API_URL) + String(TELEGRAM_BOT_TOKEN) +
+                      String(TELEGRAM_GET_UPDATES) + "?offset=" + String(offset);
+        return _httpRequest(path.c_str(), String(), httpCode);
     }
 
     // Message texte associé à un code retour (pour debug/log sans dépendance).
@@ -222,6 +208,153 @@ public:
     }
 
 private:
+    // ══════════════════════════════════════════════════════════════
+    // Session TLS persistante (depuis v1.3.0)
+    // ══════════════════════════════════════════════════════════════
+    WiFiClientSecure _tls;          // client TLS MEMBRE : un seul handshake
+    bool _sessionReady = false;
+
+    void _closeSession() {
+        _tls.stop();
+        _sessionReady = false;
+    }
+
+    // Ouvre la session TLS si nécessaire (1 seul handshake), la rouvre si
+    // la connexion est tombée. Retourne false si impossible (WiFi, horloge,
+    // échec de connexion TCP/TLS).
+    bool _ensureSession() {
+        if (_sessionReady && _tls.connected()) return true;
+        _closeSession();
+
+        _tls.setNoDelay(true);
+        _tls.setTimeout(3000);
+
+        if (validateCert) {
+            // La validation BearSSL/mbedTLS exige une horloge correcte.
+            if (time(nullptr) < 100000) return false;
+            #ifdef ESP8266
+            // Certificat racine STATIC : construit une seule fois (au 1er envoi).
+            static BearSSL::X509List cert(TELEGRAM_ROOT_CA);
+            _tls.setTrustAnchors(&cert);
+            _tls.setBufferSizes(1024, 1024);
+            #else
+            _tls.setCACert(TELEGRAM_ROOT_CA);
+            #endif
+        } else {
+            _tls.setInsecure();
+        }
+
+        if (!_tls.connect(TELEGRAM_API_HOST, 443)) {
+            _closeSession();
+            return false;
+        }
+        _sessionReady = true;
+        return true;
+    }
+
+    // Lit une ligne (jusqu'au '\n', '\r' final supprimé). false si timeout
+    // ou connexion fermée avant la fin de ligne.
+    bool _readLine(String& out) {
+        out = "";
+        uint32_t start = millis();
+        while (millis() - start < 5000UL) {
+            if (!_tls.connected() && !_tls.available()) return false;
+            int c = _tls.read();
+            if (c < 0) {
+                if (!_tls.available()) return false;   // timeout / fermeture
+                continue;
+            }
+            if (c == 0) continue;
+            if (c == '\n') {
+                if (out.length() && out[out.length() - 1] == '\r') out.remove(out.length() - 1);
+                return true;
+            }
+            out += (char)c;
+        }
+        return false;
+    }
+
+    // Lit exactement `len` octets (corps de réponse). "" si connexion coupée.
+    String _readBody(int len) {
+        String s;
+        if (len > 0) s.reserve(len);
+        uint32_t start = millis();
+        while ((int)s.length() < len) {
+            if (!_tls.available() && !_tls.connected()) break;
+            int c = _tls.read();
+            if (c < 0) {
+                if (millis() - start > 5000UL) break;
+                continue;
+            }
+            if (c == 0) continue;
+            s += (char)c;
+        }
+        return s;
+    }
+
+    // Requête HTTP/1.1 keep-alive sur la session TLS persistante.
+    //  - path     : "/bot<token>/sendMessage" ou "/bot<token>/getUpdates?offset=N"
+    //  - postBody : vide → GET ; sinon POST application/x-www-form-urlencoded.
+    // Retourne le corps de réponse (JSON Telegram). Remplit httpCode
+    // (200 = OK, -1 = échec réseau/TLS). La connexion est réutilisée
+    // (keep-alive) ; fermée si le serveur l'impose (Connection: close).
+    String _httpRequest(const char* path, const String& postBody, int& httpCode) {
+        httpCode = -1;
+        if (!_ensureSession()) return "";
+
+        bool hasBody = (postBody.length() > 0);
+        String req;
+        req += (hasBody ? "POST " : "GET ") + String(path) + " HTTP/1.1\r\n";
+        req += "Host: " TELEGRAM_API_HOST "\r\n";
+        req += "User-Agent: TelegramSender/1.3.0\r\n";
+        req += "Accept: application/json\r\n";
+        if (hasBody) {
+            req += "Content-Type: application/x-www-form-urlencoded\r\n";
+            req += "Content-Length: " + String(postBody.length()) + "\r\n";
+        }
+        req += "Connection: keep-alive\r\n\r\n";
+        if (hasBody) req += postBody;
+
+        if ((int)_tls.write((const uint8_t*)req.c_str(), req.length()) != (int)req.length()) {
+            _closeSession();
+            return "";
+        }
+        _tls.flush();
+
+        // Ligne de statut : "HTTP/1.1 200 OK"
+        String status;
+        if (!_readLine(status)) { _closeSession(); return ""; }
+        int sp = status.indexOf(' ');
+        httpCode = (sp >= 0) ? status.substring(sp + 1).toInt() : -1;
+
+        // En-têtes (jusqu'à la ligne vide) : Content-Length + Connection.
+        long contentLen = -1;
+        bool keepAlive = true;
+        for (;;) {
+            String h;
+            if (!_readLine(h)) { _closeSession(); return ""; }
+            if (h.length() == 0) break;
+            int c = h.indexOf(':');
+            if (c < 0) continue;
+            String name = h.substring(0, c); name.toLowerCase();
+            String value = h.substring(c + 1); value.trim();
+            if (name == "content-length") contentLen = value.toInt();
+            else if (name == "connection" && value.indexOf("close") >= 0) keepAlive = false;
+        }
+
+        String body;
+        if (contentLen >= 0) {
+            body = _readBody((int)contentLen);
+        } else {
+            // Sans Content-Length : lire jusqu'à fermeture (on ne réutilisera pas la session).
+            while (_tls.available()) body += (char)_tls.read();
+            keepAlive = false;
+        }
+
+        if (!keepAlive) _closeSession();
+        return body;
+    }
+
     // URL encoding pour Telegram API (application/x-www-form-urlencoded).
     // Traite les octets en non-signé : sans cela, les caractères UTF-8 (é, °…)
     // deviennent négatifs et sont mal encodés (UB sur isalnum, %0ffffffc3…).

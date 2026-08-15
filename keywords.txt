@@ -17,6 +17,8 @@ setTestMode	KEYWORD2
 setCertValidation	KEYWORD2
 setParseMode	KEYWORD2
 sendMessage	KEYWORD2
+getUpdatesBody	KEYWORD2
+endSession	KEYWORD2
 errorText	KEYWORD2
 
 #######################################

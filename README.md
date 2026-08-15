@@ -1,17 +1,31 @@
 # TelegramSender
 
-**Version 1.2.0** — https://github.com/Fo170/TelegramSender
+**Version 1.3.0** — https://github.com/Fo170/TelegramSender
 
-Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, une seule fonction synchrone `sendMessage()`).
+Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, fonction synchrone `sendMessage()` et polling `getUpdatesBody()`).
 
 ## Caractéristiques
 
 - `int sendMessage(const String&)` → `int` (`TelegramError`, 0 = succès), **aucune allocation heap en retour**.
+- **Session TLS persistante** (v1.3.0) : `WiFiClientSecure` membre de la classe, un seul handshake TLS (mbedTLS/BearSSL) à la connexion, puis requêtes **HTTP/1.1 keep-alive** réutilisées. Plus de handshake recréé à chaque appel → heap stable, plus de fragmentation (l'ancien comportement provoquait des `abort()`/reboot sur ESP32 après quelques heures).
+- `String getUpdatesBody(unsigned long offset, int& httpCode)` : corps JSON brut de `getUpdates` sur la **même** session (polling efficace, pas de reconnexion à chaque poll).
+- `void endSession()` : ferme explicitement la session TLS (le handshake sera refait à la prochaine requête), utile en cas de perte WiFi prolongée.
 - Envoi en **POST** (pas de limite d'URL, message hors ligne de requête) ; le succès vérifie le champ `"ok":true` de la réponse, pas seulement le code HTTP.
 - TLS par certificat : `TELEGRAM_ROOT_CA` (Go Daddy Root CA - G2) en PROGMEM, validation BearSSL (ESP8266) / mbedTLS (ESP32). `setCertValidation(false)` → `setInsecure()` (uniquement si l'horloge n'est jamais synchronisée).
 - Configuration : `setEnabled(bool)` (défaut `true`), `setTestMode(bool)` (défaut `false`, affiche sur Serial au lieu d'envoyer), `setCertValidation(bool)` (défaut `true`), `setParseMode(const String&)` (défaut `"Markdown"` ; `""` = texte brut).
 - `static const char* errorText(int code)` : texte des codes retour, sans dépendance externe.
 - Gestion évoluée (queue, retry, throttling) : **hors de cette lib**, à faire dans une librairie de plus haut niveau.
+
+## Nouveautés v1.3.0
+
+| Avant (≤ 1.2.0) | Depuis 1.3.0 |
+|---|---|
+| `WiFiClientSecure` + `HTTPClient` **locaux**, recréés (handshake TLS complet) à chaque appel | `WiFiClientSecure` **membre** : un seul handshake à la connexion, réutilisé (keep-alive) |
+| HTTP géré par `HTTPClient` | Requête HTTP/1.1 brute sur la session TLS (`_httpRequest`), fermeture/recréation automatique si `Connection: close` ou coupure |
+| `sendMessage()` seul point d'entrée | Ajout de `getUpdatesBody(offset, httpCode)` (GET `getUpdates` sur la même session) |
+| — | Ajout de `endSession()` (fermeture explicite de la session) |
+
+**Impact mémoire** : les buffers mbedTLS (~10-30 Ko selon la plateforme) restent **alloués en permanence** pour la durée de la session, au lieu d'être alloués/libérés à chaque appel. C'est le compromis voulu : heap stable, un seul handshake. Deux instances = deux sessions (buffers dupliqués).
 
 ## Plateformes
 
