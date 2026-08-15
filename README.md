@@ -1,6 +1,6 @@
 # TelegramSender
 
-**Version 1.3.0** — https://github.com/Fo170/TelegramSender
+**Version 1.3.1** — https://github.com/Fo170/TelegramSender
 
 Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, fonction synchrone `sendMessage()` et polling `getUpdatesBody()`).
 
@@ -26,6 +26,17 @@ Envoi bas niveau de messages Telegram pour **ESP8266 et ESP32** (header-only, fo
 | — | Ajout de `endSession()` (fermeture explicite de la session) |
 
 **Impact mémoire** : les buffers mbedTLS (~10-30 Ko selon la plateforme) restent **alloués en permanence** pour la durée de la session, au lieu d'être alloués/libérés à chaque appel. C'est le compromis voulu : heap stable, un seul handshake. Deux instances = deux sessions (buffers dupliqués).
+
+## Correctifs v1.3.1
+
+La v1.3.0 (session persistante) échouait sur **ESP32** : le message de boot partait en « Erreur HTTP / handshake TLS » avec des logs `setSocketOption(): fail on 0, errno: 9`. Quatre bugs corrigés :
+
+1. **Lecture de la réponse cassée (critique)** — `WiFiClientSecure::read()` renvoie **-1** tant que `available() == 0` (données pas encore reçues). L'ancien code abandonnait immédiatement, or la réponse Telegram arrive en ~100-500 ms → elle n'était **jamais** lue (`httpCode` restait à -1). `_readLine()`/`_readBody()` **patientent** maintenant : poll de `available()` + `delay(1)` tant que la connexion est ouverte, timeout global 5 s.
+2. **Bruit `setSocketOption(): fail on 0`** — `stop_ssl_socket()` remet `sslclient->socket` à 0 ; appeler `setNoDelay()`/`setTimeout()` **avant** `connect()` exécutait `setsockopt(0, …)` → `EBADF` (fd 0 invalide). Sur ESP32 ces appels sont déplacés **après** un `connect()` réussi, et le timeout est passé directement : `connect(host, 443, 3000)`. (ESP8266/BearSSL : inchangé, `setTimeout(3000)` avant `connect()`, pas d'impact.)
+3. **Envoi partiel** — `mbedtls_ssl_write` n'écrit **qu'un record TLS par appel** (retour partiel possible). `_httpRequest()` écrit en **boucle** jusqu'à tout envoyer (avant : échec dès un envoi partiel, grosses requêtes tronquées).
+4. **Boucle infinie potentielle** — `available()` peut renvoyer **-1** (erreur), qui est truthy : tous les tests sont maintenant `> 0`.
+
+Aucun changement d'API ni de config : `TelegramControl` et les appels existants fonctionnent sans modification.
 
 ## Plateformes
 

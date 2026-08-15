@@ -1,6 +1,6 @@
 // ============================================================
 // TelegramSender.h - Envoi bas niveau de messages Telegram
-// Version 1.3.0 - https://github.com/Fo170/TelegramSender
+// Version 1.3.1 - https://github.com/Fo170/TelegramSender
 // ESP8266 et ESP32. Envoi : sendMessage(), polling : getUpdatesBody().
 // Gestion évoluée (queue, retry, throttling) à faire dans une
 // librairie de plus haut niveau.
@@ -16,6 +16,21 @@
 // est fermée/refaite automatiquement si la connexion tombe.
 //   Ajout : getUpdatesBody(offset, httpCode) pour le polling sur la
 //   même session, et endSession() pour fermer la session explicitement.
+//
+// v1.3.1 - robustesse lecture/écriture TLS :
+//   1. _readLine()/_readBody() : WiFiClientSecure::read() renvoie -1 tant que
+//      available()==0 (aucune donnée pas encore reçue). L'ancien code
+//      abandonnait immédiatement → la réponse Telegram (latence ~100-500 ms)
+//      n'était jamais lue → "Erreur HTTP / handshake TLS" à chaque envoi.
+//      Corrigé : poll de available() + délai jusqu'à l'arrivée des données.
+//   2. setNoDelay()/setTimeout() déplacés APRÈS connect() (ESP32) : stop_ssl_socket()
+//      fait memset(sslclient,0,...) → sslclient->socket=0 → les appels avant
+//      connect() faisaient setsockopt(0,...) → "setSocketOption(): fail on 0,
+//      errno: 9 (Bad file number)". Le timeout passe par connect(host,443,3000).
+//   3. Boucle d'écriture : mbedtls_ssl_write peut renvoyer un envoi PARTIEL
+//      (un record TLS par appel) → on boucle jusqu'à tout envoyer.
+//   4. Lecture défensive : available() peut renvoyer -1 (erreur) qui est
+//      truthy → tests `> 0` pour éviter une boucle infinie.
 // ============================================================
 
 #ifndef TELEGRAM_SENDER_H
@@ -226,9 +241,6 @@ private:
         if (_sessionReady && _tls.connected()) return true;
         _closeSession();
 
-        _tls.setNoDelay(true);
-        _tls.setTimeout(3000);
-
         if (validateCert) {
             // La validation BearSSL/mbedTLS exige une horloge correcte.
             if (time(nullptr) < 100000) return false;
@@ -244,50 +256,76 @@ private:
             _tls.setInsecure();
         }
 
+        // ⚠️ fix v1.3.1 : sur ESP32, setNoDelay()/setTimeout() sont appelés APRÈS
+        // connect(). stop_ssl_socket() fait memset(sslclient,0,...) → sslclient->socket
+        // redevient 0 ; appeler setNoDelay/setTimeout avant connect() exécutait
+        // setsockopt(0, TCP_NODELAY/SO_RCVTIMEO) → "setSocketOption(): fail on 0,
+        // errno: 9 (Bad file number)". On passe le timeout au connect() lui-même.
+        #ifdef ESP8266
+        // BearSSL : pas de bug du fd (contrairement à l'ESP32), le timeout est
+        // bien appliqué avant connect (comportement v1.3.0 conservé).
+        _tls.setTimeout(3000);
         if (!_tls.connect(TELEGRAM_API_HOST, 443)) {
             _closeSession();
             return false;
         }
+        #else
+        if (!_tls.connect(TELEGRAM_API_HOST, 443, 3000)) {
+            _closeSession();
+            return false;
+        }
+        _tls.setNoDelay(true);
+        _tls.setTimeout(3000);
+        #endif
         _sessionReady = true;
         return true;
     }
 
     // Lit une ligne (jusqu'au '\n', '\r' final supprimé). false si timeout
-    // ou connexion fermée avant la fin de ligne.
+    // (5 s) ou connexion fermée avant la fin de ligne.
+    // ⚠️ fix v1.3.1 : WiFiClientSecure::read() renvoie -1 quand available()==0
+    // (aucune donnée PAS ENCORE reçue) — il faut ATTENDRE la réponse du serveur
+    // (poll de available() + délai) au lieu d'abandonner immédiatement. Sans ça,
+    // la lecture échouait systématiquement (réponse Telegram ~100-500 ms).
     bool _readLine(String& out) {
         out = "";
         uint32_t start = millis();
         while (millis() - start < 5000UL) {
-            if (!_tls.connected() && !_tls.available()) return false;
-            int c = _tls.read();
-            if (c < 0) {
-                if (!_tls.available()) return false;   // timeout / fermeture
-                continue;
+            if (_tls.available() > 0) {
+                int c = _tls.read();
+                if (c < 0) return false;   // erreur de lecture réelle
+                if (c == '\n') {
+                    if (out.length() && out[out.length() - 1] == '\r') out.remove(out.length() - 1);
+                    return true;
+                }
+                out += (char)c;
+            } else if (!_tls.connected()) {
+                return false;   // connexion coupée
+            } else {
+                delay(1);       // pas encore de données : attendre la réponse
             }
-            if (c == 0) continue;
-            if (c == '\n') {
-                if (out.length() && out[out.length() - 1] == '\r') out.remove(out.length() - 1);
-                return true;
-            }
-            out += (char)c;
         }
         return false;
     }
 
     // Lit exactement `len` octets (corps de réponse). "" si connexion coupée.
+    // ⚠️ fix v1.3.1 : même principe que _readLine — WiFiClientSecure::read()
+    // renvoie -1 tant que rien n'est disponible, il faut poller + attendre.
     String _readBody(int len) {
         String s;
         if (len > 0) s.reserve(len);
         uint32_t start = millis();
         while ((int)s.length() < len) {
-            if (!_tls.available() && !_tls.connected()) break;
-            int c = _tls.read();
-            if (c < 0) {
-                if (millis() - start > 5000UL) break;
-                continue;
+            if (_tls.available() > 0) {
+                int c = _tls.read();
+                if (c < 0) break;   // erreur de lecture réelle
+                s += (char)c;
+            } else if (!_tls.connected()) {
+                break;              // connexion coupée
+            } else {
+                if (millis() - start > 5000UL) break;   // timeout global
+                delay(1);
             }
-            if (c == 0) continue;
-            s += (char)c;
         }
         return s;
     }
@@ -306,7 +344,7 @@ private:
         String req;
         req += (hasBody ? "POST " : "GET ") + String(path) + " HTTP/1.1\r\n";
         req += "Host: " TELEGRAM_API_HOST "\r\n";
-        req += "User-Agent: TelegramSender/1.3.0\r\n";
+        req += "User-Agent: TelegramSender/1.3.1\r\n";
         req += "Accept: application/json\r\n";
         if (hasBody) {
             req += "Content-Type: application/x-www-form-urlencoded\r\n";
@@ -315,9 +353,18 @@ private:
         req += "Connection: keep-alive\r\n\r\n";
         if (hasBody) req += postBody;
 
-        if ((int)_tls.write((const uint8_t*)req.c_str(), req.length()) != (int)req.length()) {
-            _closeSession();
-            return "";
+        // ⚠️ fix v1.3.1 : boucle d'écriture — mbedtls_ssl_write (send_ssl_data)
+        // peut retourner un envoi PARTIEL (un seul record TLS par appel) ; on
+        // boucle jusqu'à tout envoyer. L'ancien contrôle d'égalité stricte
+        // échouait dès qu'un envoi partiel survenait (grosses requêtes).
+        size_t sent = 0;
+        while (sent < req.length()) {
+            size_t n = _tls.write((const uint8_t*)req.c_str() + sent, req.length() - sent);
+            if (n == 0) {
+                _closeSession();
+                return "";
+            }
+            sent += n;
         }
         _tls.flush();
 
@@ -346,8 +393,10 @@ private:
         if (contentLen >= 0) {
             body = _readBody((int)contentLen);
         } else {
-            // Sans Content-Length : lire jusqu'à fermeture (on ne réutilisera pas la session).
-            while (_tls.available()) body += (char)_tls.read();
+            // Sans Content-Length : lire jusqu'à fermeture (on ne réutilisera pas
+            // la session). ⚠️ available() peut renvoyer -1 (erreur) qui est truthy :
+            // le test doit être `> 0` pour éviter une boucle infinie.
+            while (_tls.available() > 0) body += (char)_tls.read();
             keepAlive = false;
         }
 
