@@ -38,7 +38,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __TELEGRAMSENDER_H_VERSION__ "1.3.1"
+#define __TELEGRAMSENDER_H_VERSION__ "1.3.2"
 #include <Arduino.h>
 #include <time.h>
 
