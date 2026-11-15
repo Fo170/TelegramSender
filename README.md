@@ -38,6 +38,30 @@ La v1.3.0 (session persistante) échouait sur **ESP32** : le message de boot par
 
 Aucun changement d'API ni de config : `TelegramControl` et les appels existants fonctionnent sans modification.
 
+## Correctifs v1.3.3 — CORRECTIF CRITIQUE
+
+**Sur ESP32, `WiFiClientSecure::setTimeout()` attend des SECONDES, pas des millisecondes.**
+
+L'appel `_tls.setTimeout(3000)`, écrit en pensant à des millisecondes, posait en réalité un timeout de **3000 secondes (50 minutes)** sur la lecture **et** l'écriture TLS. Le code source du core 2.x le confirme :
+
+```cpp
+int WiFiClientSecure::setTimeout(uint32_t seconds) {
+    _timeout = seconds * 1000;      // 3 000 000 ms
+    tv.tv_sec = seconds;            // SO_RCVTIMEO = 3000 s
+    setSocketOption(SO_SNDTIMEO, …);// SO_SNDTIMEO = 3000 s
+}
+```
+
+**Conséquence observée** : si Telegram cessait de répondre au milieu d'un échange, `sendMessage()` bloquait jusqu'à 50 minutes. Sur un firmware qui surveille ses tâches (chien de garde applicatif de type « la boucle n'a pas avancé depuis 120 s → redémarrer »), la carte était déclarée figée puis **redémarrée**, sans aucun message d'erreur. Symptôme : des reboots « Reset logiciel » inexpliqués, le dernier jalon du journal pointant sur le module qui venait d'envoyer un message.
+
+**Correctif** : `_tls.setTimeout(3)` sur ESP32 (3 secondes), ce qui remet aussi le timeout du `Stream` à 3000 ms — cohérent avec le 3ᵉ argument de `connect(host, 443, 3000)`.
+
+⚠️ **La branche ESP8266 est inchangée** : BearSSL hérite de `Stream::setTimeout()`, qui attend des **millisecondes** — `3000` y vaut bien 3 s.
+
+⚠️ **Piège générique** : `WiFiClient::setTimeout()` et `WiFiClientSecure::setTimeout()` prennent des **secondes** sur ESP32 (et sur ESP8266 pour `WiFiClient`), alors que `Stream::setTimeout()` prend des millisecondes. Toujours vérifier l'unité de la classe réellement appelée.
+
+Aucun changement d'API : seul le comportement en cas de non-réponse change.
+
 ## Plateformes
 
 - **Officiellement supportées** : ESP8266 (BearSSL, `setBufferSizes(1024,1024)`) et ESP32.

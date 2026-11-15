@@ -1,6 +1,6 @@
 // ============================================================
 // TelegramSender.h - Envoi bas niveau de messages Telegram
-// Version 1.3.1 - https://github.com/Fo170/TelegramSender
+// Version 1.3.3 - https://github.com/Fo170/TelegramSender
 // ESP8266 et ESP32. Envoi : sendMessage(), polling : getUpdatesBody().
 // Gestion évoluée (queue, retry, throttling) à faire dans une
 // librairie de plus haut niveau.
@@ -31,6 +31,21 @@
 //      (un record TLS par appel) → on boucle jusqu'à tout envoyer.
 //   4. Lecture défensive : available() peut renvoyer -1 (erreur) qui est
 //      truthy → tests `> 0` pour éviter une boucle infinie.
+//
+// v1.3.3 - CORRECTIF CRITIQUE (gel de la carte) : unité de setTimeout() sur ESP32.
+//   WiFiClientSecure::setTimeout() de l'ESP32 (core 2.x) attend des SECONDES
+//   (il fait `_timeout = seconds * 1000` et pose SO_RCVTIMEO/SO_SNDTIMEO avec
+//   `tv_sec = seconds`). L'appel `_tls.setTimeout(3000)` — écrit en pensant à des
+//   millisecondes — posait donc un timeout de 3000 SECONDES (50 minutes) sur la
+//   lecture ET l'écriture TLS. Si Telegram cessait de répondre en cours
+//   d'échange, sendMessage() bloquait jusqu'à 50 min : sur un firmware qui
+//   supervise ses tâches (chiens de garde applicatifs), la carte était déclarée
+//   figée puis redémarrée au bout de quelques minutes — sans aucun message
+//   d'erreur. Symptôme observé : reboots « Reset logiciel » inexpliqués, le
+//   dernier jalon pointant sur le module qui venait d'envoyer un message.
+//   Correctif : `_tls.setTimeout(3)` (= 3 s). ⚠️ La branche ESP8266 est
+//   INCHANGÉE : BearSSL hérite de Stream::setTimeout(), qui attend des
+//   MILLISECONDES — 3000 y vaut bien 3 s.
 // ============================================================
 
 #ifndef TELEGRAM_SENDER_H
@@ -38,7 +53,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __TELEGRAMSENDER_H_VERSION__ "1.3.2"
+#define __TELEGRAMSENDER_H_VERSION__ "1.3.3"
 #include <Arduino.h>
 #include <time.h>
 
@@ -267,6 +282,8 @@ private:
         #ifdef ESP8266
         // BearSSL : pas de bug du fd (contrairement à l'ESP32), le timeout est
         // bien appliqué avant connect (comportement v1.3.0 conservé).
+        // ⚠️ Sur ESP8266, setTimeout() hérite de Stream::setTimeout() → MILLISECONDES.
+        // 3000 = 3 s : CORRECT, ne pas changer l'unité ici.
         _tls.setTimeout(3000);
         if (!_tls.connect(TELEGRAM_API_HOST, 443)) {
             _closeSession();
@@ -278,7 +295,13 @@ private:
             return false;
         }
         _tls.setNoDelay(true);
-        _tls.setTimeout(3000);
+        // ⚠️ v1.3.3 : sur ESP32, WiFiClientSecure::setTimeout() attend des SECONDES
+        // (cf. en-tête du fichier). `setTimeout(3000)` posait 3000 s = 50 min de
+        // blocage possible sur une lecture/écriture TLS qui n'aboutit pas → carte
+        // figée puis redémarrée par le chien de garde applicatif.
+        // 3 = 3 secondes, ce qui remet aussi le timeout du Stream à 3000 ms
+        // (même valeur que le 3e argument de connect() ci-dessus).
+        _tls.setTimeout(3);
         #endif
         _sessionReady = true;
         return true;
